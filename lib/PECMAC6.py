@@ -3,7 +3,8 @@
     Author: Alex Bucknall
     Organisation: Aurora Industrial Machines
     Date created: 21/04/2018
-    Date last modified: 22/04/2018
+    Date last modified: 05/06/2018
+    Version: v1_0_1
     Pycom Firmware Version: LoPy_v1.17.3.b1
     License: MIT
 '''
@@ -12,6 +13,7 @@ from machine import I2C
 import logging
 import binascii
 import time
+from math import floor
 
 # Log Output Priorities
 ALL                                     = 0     # Display All Messages
@@ -88,57 +90,74 @@ class PECMAC6():
             return None
 
     def get_current(self, start, end): # Returns dict of current values for provided sensors
-        try:
-            command = [PECMAC125A_HEADER_BYTE_1, PECMAC125A_HEADER_BYTE_2, PECMAC125A_COMMAND_1, start, end, PECMAC125A_RESERVED, PECMAC125A_RESERVED]
-            command.append(self.__calculate_checksum(command))
-            self.log.debug("Bytes : {}".format(command))
-            self.i2c.writeto(self.addr, bytes(command))
-            time.sleep(0.5)
-            current_data = self.i2c.readfrom(self.addr, (((end-start)+1)*3)+1)
-            self.__verify_checksum(current_data)
-            for index, each in enumerate(current_data):
-                self.log.debug("Byte {0} : {1}".format(str(index), str(each)))
-            current = {}
-            for i in range(0, (end-start)+1) :
-                msb1 = current_data[i * 3]
-                msb = current_data[1 + i * 3]
-                lsb = current_data[2 + i * 3]
-                current["SENSOR_{}".format(start+i)] = float(msb1 * 65536 + msb * 256 + lsb / PECMAC125A_SCALE) # Convert raw bytes to mA
-            return current
-        except OSError as err:
-            self.log.error(str(err))
-            return None    
-
-    def get_calibration(self, start, end):
-            command = [PECMAC125A_HEADER_BYTE_1, PECMAC125A_HEADER_BYTE_2, PECMAC125A_COMMAND_3, start, end, PECMAC125A_RESERVED, PECMAC125A_RESERVED]
-            command.append(self.__calculate_checksum(command))
-            self.log.debug("Bytes : {}".format(command))
+        total_current = {}
+        if (end - start) >= 5:  # To support Pycom I2C buffer length
+            x = []
+            while(not start > end):
+                if not ((start + 4) > end): 
+                    pair = (start,start + 4)
+                else:
+                    pair = (start, end)
+                x.append(pair)
+                start += 5
+            for each in x:
+                currents = self.get_current(each[0],each[1])
+                for current in currents:
+                    total_current[current] = currents[current]
+            return total_current            
+        else:
             try:
+                command = [PECMAC125A_HEADER_BYTE_1, PECMAC125A_HEADER_BYTE_2, PECMAC125A_COMMAND_1, start, end, PECMAC125A_RESERVED, PECMAC125A_RESERVED]
+                command.append(self.__calculate_checksum(command))
+                self.log.debug("Bytes : {}".format(command))
                 self.i2c.writeto(self.addr, bytes(command))
+                time.sleep(0.5)
+                current_data = self.i2c.readfrom(self.addr, (((end-start)+1)*3)+1)
+                self.__verify_checksum(current_data)
+                for index, each in enumerate(current_data):
+                    self.log.debug("Byte {0} : {1}".format(str(index), str(each)))
+                current = {}
+                for i in range(0, (end-start)+1) :
+                    msb1 = current_data[i * 3]
+                    msb = current_data[(1 + (i * 3))]
+                    lsb = current_data[(2 + (i * 3))]
+                    current["SENSOR_{}".format(start+i)] = float((msb1 * 65536) + (msb * 256) + (lsb / PECMAC125A_SCALE)) # Convert raw bytes to mA
+                return current
             except OSError as err:
                 self.log.error(str(err))
-                return None  
-            time.sleep(0.5)
-            print(((end - start + 1) * 2) + 1)
-            calibration_data = self.i2c.readfrom(self.addr, (((end - start + 1) * 2) + 1))
-            self.__verify_checksum(calibration_data)
-            for index, each in enumerate(calibration_data):
-                self.log.debug("Byte {0} : {1}".format(str(index), str(each)))
-            calibration = {}
-            for i in range(0, (end-start)+1) :
-                msb = calibration_data[i * 2]
-                lsb = calibration_data[1 + i * 2]
-                calibration["SENSOR_{}".format(start+i)] = float((msb * 256) + lsb) # Convert raw bytes to mA
-            return calibration
+                return None    
+
+    def get_calibration(self, start, end):
+        command = [PECMAC125A_HEADER_BYTE_1, PECMAC125A_HEADER_BYTE_2, PECMAC125A_COMMAND_3, start, end, PECMAC125A_RESERVED, PECMAC125A_RESERVED]
+        command.append(self.__calculate_checksum(command))
+        self.log.debug("Bytes : {}".format(command))
+        try:
+            self.i2c.writeto(self.addr, bytes(command))
+        except OSError as err:
+            self.log.error(str(err))
+            return None  
+        time.sleep(0.5)
+        print(((end - start + 1) * 2) + 1)
+        calibration_data = self.i2c.readfrom(self.addr, (((end - start + 1) * 2) + 1))
+        self.__verify_checksum(calibration_data)
+        for index, each in enumerate(calibration_data):
+            self.log.debug("Byte {0} : {1}".format(str(index), str(each)))
+        calibration = {}
+        for i in range(0, (end-start)+1) :
+            msb = calibration_data[i * 2]
+            lsb = calibration_data[1 + i * 2]
+            calibration["SENSOR_{}".format(start+i)] = float((msb * 256) + lsb) # Convert raw bytes to mA
+        return calibration
     
     def set_calibration(self):
+        # TODO
         pass
 
     def __calculate_checksum(self, command): # Calculates Checksum for I2C write
         checksum = 0
         for each in command:
             checksum += each
-        checksum &= 0b11111111
+        checksum &= 0xFF
         self.log.debug("Checksum : {}".format(hex(checksum)))
         return checksum
 
@@ -149,64 +168,3 @@ class PECMAC6():
             expected += byte
         if(expected is not received):
             self.log.error("Mismatched Checksum : {0} - {1}".format(expected, received))
-
-
-p = PECMAC6(addr=PECMAC125A_DEFAULT_ADDRESS, log=ALL)
-# print(p.get_info())
-# print(p.get_current(CHANNEL_1, CHANNEL_4))
-print(p.get_calibration(CHANNEL_1, CHANNEL_6))
-
-
-# # Get I2C bus
-# bus = smbus.SMBus(1)
-
-# # PECMAC125A address, 0x2A(42)
-# # Command for reading device identification data
-# # 0x6A(106), 0x02(2), 0x00(0),0x00(0), 0x00(0) 0x00(0), 0xFE(254)
-# # Header byte-2, command-2, byte 3, 4, 5 and 6 are reserved, checksum
-# command2 = [0x6A, 0x02, 0x00, 0x00, 0x00, 0x00, 0xFE]
-# bus.write_i2c_block_data(0x2A, 0x92, command2)
-
-# time.sleep(0.5)
-
-# # PECMAC125A address, 0x2A(42)
-# # Read data back from 0x55(85), 3 bytes
-# # Type of Sensor, Maximum Current, No. of Channels
-# data = bus.read_i2c_block_data(0x2A, 0x55, 3)
-
-# # Convert the data
-# typeOfSensor = data[0]
-# maxCurrent = data[1]
-# noOfChannel = data[2]
-
-# # Output data to screen
-# print "Type of Sensor : %d" %typeOfSensor
-# print "Maximum Current : %d A" %maxCurrent
-# print "No. of Channels : %d" %noOfChannel
-
-# # PECMAC125A address, 0x2A(42)
-# # Command for reading current
-# # 0x6A(106), 0x01(1), 0x01(1),0x0C(12), 0x00(0), 0x00(0) 0x0A(10)
-# # Header byte-2, command-1, start channel-1, stop channel-12, byte 5 and 6 reserved, checksum
-# command1 = [0x6A, 0x01, 0x01, 0x0C, 0x00, 0x00, 0x0A]
-# bus.write_i2c_block_data(0x2A, 0x92, command1)
-
-# time.sleep(0.5)
-
-# # PECMAC125A address, 0x2A(42)
-# # Read data back from 0x55(85), No. of Channels * 3 bytes
-# # current MSB1, current MSB, current LSB
-# data1 = bus.read_i2c_block_data(0x2A, 0x55, noOfChannel*3)
-
-# Convert the data
-# for i in range(0, noOfChannel) :
-# 	msb1 = data1[i * 3] 0 3 6
-# 	msb = data1[1 + i * 3] 1 4 7
-# 	lsb = data1[2 + i * 3] 2 5 8
-	
-# 	# Convert the data to ampere
-# 	current = (msb1 * 65536 + msb * 256 + lsb) / 1000.0
-	
-# 	# Output data to screen
-# 	print "Channel no : %d " %(i + 1)
-# 	print "Current Value : %.3f A" %current
